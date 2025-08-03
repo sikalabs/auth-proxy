@@ -1,0 +1,22 @@
+# Mac
+.DS_Store
+
+# Editor
+.vscode
+.idea
+
+# Terraform
+.infracost
+
+# Generic
+temp
+.env
+*.log
+*.backup
+*.local.sh
+*.local.yml
+*.local.yaml
+*.local.json
+*.local.txt
+
+auth-proxy
