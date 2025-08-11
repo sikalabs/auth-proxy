@@ -8,6 +8,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -18,13 +19,15 @@ import (
 -------------------------------------------------------------------- */
 
 var (
-	listenAddr   = env("LISTEN_ADDR", ":8082")
-	upstreamAddr = env("UPSTREAM_ADDR", "https://127.0.0.1:8080")
-	authEndpoint = env("AUTH_ENDPOINT", "http://127.0.0.1:8181/v1/signature")
-	authMethod   = env("AUTH_METHOD", http.MethodPost)
-	maxBodySize  = envInt("MAX_BODY_SIZE_MB", 30) // MB forwarded to auth
-	debug        = envBool("DEBUG", false)        // DEBUG=1 turns on verbose logs
-	upstreamURL  *url.URL                         // parsed once in init()
+	listenAddr       = env("LISTEN_ADDR", ":8082")
+	upstreamAddr     = env("UPSTREAM_ADDR", "https://127.0.0.1:8080")
+	authEndpoint     = env("AUTH_ENDPOINT", "http://127.0.0.1:8181/v1/signature")
+	authMethod       = env("AUTH_METHOD", http.MethodPost)
+	maxBodySize      = envInt("MAX_BODY_SIZE_MB", 30)               // MB forwarded to auth
+	debug            = envBool("DEBUG", false)                      // DEBUG=1 turns on verbose logs
+	authIncludeRegex = env("AUTH_INCLUDE_REGEX", "^/public(?:/|$)") // only URIs matching this require auth
+	upstreamURL      *url.URL                                       // parsed once in init()
+	authIncludeRE    *regexp.Regexp                                 // compiled once in init()
 )
 
 func init() {
@@ -33,6 +36,12 @@ func init() {
 		log.Fatalf("invalid UPSTREAM_ADDR %q: %v", upstreamAddr, err)
 	}
 	upstreamURL = u
+
+	re, err := regexp.Compile(authIncludeRegex)
+	if err != nil {
+		log.Fatalf("invalid AUTH_INCLUDE_REGEX %q: %v", authIncludeRegex, err)
+	}
+	authIncludeRE = re
 }
 
 /* --------------------------------------------------------------------
@@ -63,6 +72,19 @@ func main() {
 type authTransport struct{ upstream http.RoundTripper }
 
 func (a *authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	/* ---------- BYPASS CHECK ---------- */
+	if !authIncludeRE.MatchString(r.URL.Path) {
+		// forward directly to upstream without touching auth
+		out := r.Clone(r.Context())
+		out.URL.Scheme = upstreamURL.Scheme
+		out.URL.Host = upstreamURL.Host
+		out.Host = upstreamURL.Host
+		if debug {
+			dump("BYPASS → UPSTREAM", out, nil, "")
+		}
+		return a.upstream.RoundTrip(out)
+	}
+
 	/* ---------- CLIENT → PROXY ---------- */
 	if debug {
 		dump("CLIENT → PROXY", r, nil, "")

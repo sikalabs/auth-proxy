@@ -28,11 +28,12 @@ A tiny Go reverse‑proxy that performs a **pre‑request authentication** call 
 ---
 
 ## Environment variables
-| Variable           | Default                              | Description                                          |
-|--------------------|--------------------------------------|------------------------------------------------------|
-| `LISTEN_ADDR`      | `:8082`                              | Address the proxy listens on                         |
-| `UPSTREAM_ADDR`    | `http://127.0.0.1:8080`              | Target service inside the pod                        |
-| `AUTH_ENDPOINT`    | `http://127.0.0.1:8181/v1/signature` | Auth service endpoint                                |
-| `AUTH_METHOD`      | `POST`                               | HTTP verb used for the auth call                     |
-| `MAX_BODY_SIZE_MB` | `30`                                 | How many MiB of the body to copy to the auth request |
-| `DEBUG`            | `false`                              | Set to `true` for verbose dumps                      |
+| Variable             | Default                              | Description                                          |
+|----------------------|--------------------------------------|------------------------------------------------------|
+| `LISTEN_ADDR`        | `:8082`                              | Address the proxy listens on                         |
+| `UPSTREAM_ADDR`      | `http://127.0.0.1:8080`              | Target service inside the pod                        |
+| `AUTH_ENDPOINT`      | `http://127.0.0.1:8181/v1/signature` | Auth service endpoint                                |
+| `AUTH_METHOD`        | `POST`                               | HTTP verb used for the auth call                     |
+| `AUTH_INCLUDE_REGEX` | `^/public(?:/$)`                     | Only URIs matching this require auth                 |  
+| `MAX_BODY_SIZE_MB`   | `30`                                 | How many MiB of the body to copy to the auth request |
+| `DEBUG`              | `false`                              | Set to `true` for verbose dumps                      |
