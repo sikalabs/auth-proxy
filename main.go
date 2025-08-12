@@ -19,15 +19,17 @@ import (
 -------------------------------------------------------------------- */
 
 var (
-	listenAddr       = env("LISTEN_ADDR", ":8082")
-	upstreamAddr     = env("UPSTREAM_ADDR", "https://127.0.0.1:8080")
-	authEndpoint     = env("AUTH_ENDPOINT", "http://127.0.0.1:8181/v1/signature")
-	authMethod       = env("AUTH_METHOD", http.MethodPost)
-	maxBodySize      = envInt("MAX_BODY_SIZE_MB", 30)               // MB forwarded to auth
-	debug            = envBool("DEBUG", false)                      // DEBUG=1 turns on verbose logs
-	authIncludeRegex = env("AUTH_INCLUDE_REGEX", "^/public(?:/|$)") // only URIs matching this require auth
-	upstreamURL      *url.URL                                       // parsed once in init()
-	authIncludeRE    *regexp.Regexp                                 // compiled once in init()
+	listenAddr              = env("LISTEN_ADDR", ":8082")
+	upstreamAddr            = env("UPSTREAM_ADDR", "https://127.0.0.1:8080")
+	authEndpoint            = env("AUTH_ENDPOINT", "http://127.0.0.1:8181/v1/signature")
+	authMethod              = env("AUTH_METHOD", http.MethodPost)
+	maxBodySize             = envInt("MAX_BODY_SIZE_MB", 30)               // MB forwarded to auth
+	debug                   = envBool("DEBUG", false)                      // DEBUG=1 turns on verbose logs
+	authIncludeRegex        = env("AUTH_INCLUDE_REGEX", "^/public(?:/|$)") // only URIs matching this require auth
+	forwardAuthHeadersRaw   = env("AUTH_FORWARD_AUTH_HEADERS", "")         // comma header list; empty → no Auth headers forwarding
+	upstreamURL             *url.URL                                       // parsed once in init()
+	authIncludeRE           *regexp.Regexp                                 // compiled once in init()
+	forwardAuthHeadersCanon []string                                       // canonicalized header names
 )
 
 func init() {
@@ -42,6 +44,10 @@ func init() {
 		log.Fatalf("invalid AUTH_INCLUDE_REGEX %q: %v", authIncludeRegex, err)
 	}
 	authIncludeRE = re
+
+	if strings.TrimSpace(forwardAuthHeadersRaw) != "" {
+		forwardAuthHeadersCanon = parseHeaderList(forwardAuthHeadersRaw)
+	}
 }
 
 /* --------------------------------------------------------------------
@@ -136,6 +142,25 @@ func (a *authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	out.URL.Host = upstreamURL.Host
 	out.Host = upstreamURL.Host
 
+	// 4a) Copy configured headers from AUTH response → upstream request (optional)
+	if len(forwardAuthHeadersCanon) > 0 {
+		for _, h := range forwardAuthHeadersCanon {
+			values := authResp.Header.Values(h)
+			if len(values) == 0 {
+				continue
+			}
+			out.Header.Del(h) // replace any existing values
+			for _, v := range values {
+				if v != "" {
+					out.Header.Add(h, v)
+				}
+			}
+		}
+		if debug {
+			log.Printf("[FORWARD] copied headers from AUTH → UPSTREAM: %s", strings.Join(forwardAuthHeadersCanon, ", "))
+		}
+	}
+
 	if debug {
 		dump("PROXY → UPSTREAM", out, nil, "")
 	}
@@ -182,6 +207,24 @@ func cloneSubset(src http.Header) http.Header {
 		}
 	}
 	return dst
+}
+
+func parseHeaderList(raw string) []string {
+	items := strings.Split(raw, ",")
+	out := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, it := range items {
+		h := http.CanonicalHeaderKey(strings.TrimSpace(it))
+		if h == "" {
+			continue
+		}
+		if _, ok := seen[h]; ok {
+			continue
+		}
+		seen[h] = struct{}{}
+		out = append(out, h)
+	}
+	return out
 }
 
 func drainAndClose(c io.ReadCloser) { io.Copy(io.Discard, io.LimitReader(c, 4<<10)); _ = c.Close() }

@@ -1,4 +1,4 @@
-TAG = v0.1.2
+TAG = v0.1.3
 IMAGE = sikalabs/auth-proxy
 IMAGE_LATEST = ${IMAGE}:latest
 IMAGE_TAGGED = ${IMAGE}:${TAG}
