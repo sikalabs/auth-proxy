@@ -79,7 +79,7 @@ type authTransport struct{ upstream http.RoundTripper }
 
 func (a *authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	/* ---------- BYPASS CHECK ---------- */
-	if !authIncludeRE.MatchString(r.URL.Path) {
+	if !authIncludeRE.MatchString(r.URL.Path) || r.Method == http.MethodOptions {
 		// forward directly to upstream without touching auth
 		out := r.Clone(r.Context())
 		out.URL.Scheme = upstreamURL.Scheme
