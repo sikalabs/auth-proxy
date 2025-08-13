@@ -253,7 +253,11 @@ func parseHeaderList(raw string) []string {
 var errRequestBodyTooLarge = errors.New("request body exceeds MAX_BODY_SIZE_MB")
 
 func readFullBodyBounded(rc io.ReadCloser, max int64) ([]byte, error) {
+	if rc == nil {
+		return []byte{}, nil
+	}
 	defer rc.Close()
+
 	var buf bytes.Buffer
 	n, err := io.CopyN(&buf, rc, max+1) // read up to max+1 to detect overflow
 	if err != nil && !errors.Is(err, io.EOF) {
