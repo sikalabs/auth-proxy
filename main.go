@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -30,6 +31,7 @@ var (
 	upstreamURL             *url.URL                                       // parsed once in init()
 	authIncludeRE           *regexp.Regexp                                 // compiled once in init()
 	forwardAuthHeadersCanon []string                                       // canonicalized header names
+	maxBodyBytes            int64
 )
 
 func init() {
@@ -48,6 +50,11 @@ func init() {
 	if strings.TrimSpace(forwardAuthHeadersRaw) != "" {
 		forwardAuthHeadersCanon = parseHeaderList(forwardAuthHeadersRaw)
 	}
+
+	if maxBodySize <= 0 {
+		maxBodySize = 1 // safety minimum
+	}
+	maxBodyBytes = int64(maxBodySize) << 20
 }
 
 /* --------------------------------------------------------------------
@@ -96,13 +103,16 @@ func (a *authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		dump("CLIENT → PROXY", r, nil, "")
 	}
 
-	// 1) Copy/peek body so we can use it twice
-	var bodyCopy []byte
-	if r.Body != nil {
-		peek, _ := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize<<20)))
-		bodyCopy = peek
-		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(peek), r.Body))
+	// 1) Read FULL body (bounded). Auth must see the exact bytes.
+	bodyCopy, err := readFullBodyBounded(r.Body, maxBodyBytes)
+	if err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			return tooLarge(), nil
+		}
+		return nil, err
 	}
+	// Restore original body for later upstream call
+	r.Body = io.NopCloser(bytes.NewReader(bodyCopy))
 
 	// 2) Call auth service
 	authReq, _ := http.NewRequest(authMethod, authEndpoint, bytes.NewReader(bodyCopy))
@@ -111,7 +121,7 @@ func (a *authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	authReq.Header.Set("X-Orig-Method", r.Method)
 
 	if debug {
-		dump("PROXY → AUTH", authReq, nil, string(bodyCopy))
+		dump("PROXY → AUTH", authReq, nil, preview(bodyCopy))
 	}
 
 	authResp, err := a.upstream.RoundTrip(authReq)
@@ -141,6 +151,8 @@ func (a *authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	out.URL.Scheme = upstreamURL.Scheme
 	out.URL.Host = upstreamURL.Host
 	out.Host = upstreamURL.Host
+	out.Body = io.NopCloser(bytes.NewReader(bodyCopy))
+	out.ContentLength = int64(len(bodyCopy))
 
 	// 4a) Copy configured headers from AUTH response → upstream request (optional)
 	if len(forwardAuthHeadersCanon) > 0 {
@@ -192,6 +204,17 @@ func dump(tag string, req *http.Request, resp *http.Response, bodyPreview string
 	}
 }
 
+func preview(b []byte) string {
+	const max = 512
+	if len(b) == 0 {
+		return ""
+	}
+	if len(b) > max {
+		return string(b[:max]) + "...(truncated)"
+	}
+	return string(b)
+}
+
 func trimNL(s string) string { return strings.ReplaceAll(s, "\n", "\\n") }
 
 /* --------------------------------------------------------------------
@@ -202,7 +225,7 @@ func cloneSubset(src http.Header) http.Header {
 	dst := http.Header{}
 	for k, v := range src {
 		switch http.CanonicalHeaderKey(k) {
-		case "Signature", "Signature-Date":
+		case "Signature", "Signature-Date", "Content-Type", "Content-Length":
 			dst[k] = v
 		}
 	}
@@ -225,6 +248,31 @@ func parseHeaderList(raw string) []string {
 		out = append(out, h)
 	}
 	return out
+}
+
+var errRequestBodyTooLarge = errors.New("request body exceeds MAX_BODY_SIZE_MB")
+
+func readFullBodyBounded(rc io.ReadCloser, max int64) ([]byte, error) {
+	defer rc.Close()
+	var buf bytes.Buffer
+	n, err := io.CopyN(&buf, rc, max+1) // read up to max+1 to detect overflow
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if n > max {
+		return nil, errRequestBodyTooLarge
+	}
+	return buf.Bytes(), nil
+}
+
+func tooLarge() *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusRequestEntityTooLarge, // 413
+		Status:     "413 Request Entity Too Large",
+		Proto:      "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+		Header: make(http.Header),
+		Body:   io.NopCloser(bytes.NewReader(nil)),
+	}
 }
 
 func drainAndClose(c io.ReadCloser) { io.Copy(io.Discard, io.LimitReader(c, 4<<10)); _ = c.Close() }
